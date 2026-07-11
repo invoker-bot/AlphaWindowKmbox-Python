@@ -36,3 +36,7 @@ pytest -q
 Local tests use `../AlphaWindow-Python/src` so this project can be developed
 against the adjacent AlphaWindow checkout while the recording input plugin
 protocol is being integrated.
+
+## License
+
+MIT
