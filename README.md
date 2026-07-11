@@ -40,3 +40,12 @@ protocol is being integrated.
 ## License
 
 MIT
+
+## Publishing
+
+Publishing is handled by `.github/workflows/publish.yml`.
+
+- Push a `v*` tag, or run the workflow manually from GitHub Actions.
+- Set the repository secret `PYPI_API_TOKEN` to a PyPI API token.
+- The workflow runs tests, builds the package, checks the distribution metadata,
+  and uploads the artifacts to PyPI.
