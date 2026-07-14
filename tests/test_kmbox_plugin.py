@@ -4,7 +4,13 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from alphawindow.recording import RecordingLabel
-from alphawindow.types import BackendCompatibilityError
+from alphawindow.types import (
+    BackendCompatibilityError,
+    Capability,
+    InputMode,
+    Operation,
+    WindowSnapshot,
+)
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -37,6 +43,51 @@ def test_kmbox_plugin_registers_recording_input_method() -> None:
         "default": "auto",
         "enum": ["auto", "hid", "kmbox_a"],
     }
+
+
+def test_kmbox_plugin_registers_replay_input_method() -> None:
+    from alphawindow_kmbox import alphawindow_input_methods
+
+    class FakeDevice:
+        def __init__(self) -> None:
+            self.opened = False
+            self.closed = False
+            self.moves = []
+
+        def open(self) -> bool:
+            self.opened = True
+            return True
+
+        def close(self) -> None:
+            self.closed = True
+
+        def move_relative(self, dx: int, dy: int) -> None:
+            self.moves.append((dx, dy))
+
+    device = FakeDevice()
+    methods = alphawindow_input_methods()
+
+    assert len(methods) == 1
+    method = methods[0]
+    assert method.name == "kmbox"
+    assert method.mode is InputMode.FOREGROUND
+    assert method.capabilities == frozenset({Capability.GLOBAL_INPUT})
+    assert method.metadata["plugin_id"] == "kmbox"
+
+    backend = method.create_backend(kmbox_factory=lambda **_options: device)
+    target = WindowSnapshot(hwnd=1, title="target", rect=(0, 0, 100, 100), dpi=96)
+    result = backend.perform(
+        target,
+        Operation(kind="mouse_delta", metadata={"dx": 12, "dy": -7}),
+    )
+    backend.close()
+
+    assert device.opened is True
+    assert device.moves == [(12, -7)]
+    assert device.closed is True
+    assert result.executed is True
+    assert result.backend == "kmbox"
+    assert result.details == {"hwnd": 1}
 
 
 def test_kmbox_detect_devices_filters_vid_pid_and_device_id() -> None:

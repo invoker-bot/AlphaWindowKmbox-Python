@@ -7,6 +7,11 @@ The plugin registers the `kmbox` recording input method through the
 AlphaWindow `mouse_delta` labels and leaves the target window selection to
 AlphaWindow itself.
 
+It also registers a `kmbox` replay input method for AlphaWindow versions that
+expose plugin input methods as replay outputs. This replays recorded
+`mouse_delta` labels through the kmbox hardware instead of the foreground mouse
+or Win32 input backends.
+
 ## Device Type Detection
 
 The plugin supports `device_type=auto`, `hid`, and `kmbox_a`.

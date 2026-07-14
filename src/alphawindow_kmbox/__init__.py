@@ -21,9 +21,20 @@ import sys
 import threading
 from typing import Any, Callable
 
-from alphawindow.plugins import PluginRecordingInputCaptureMethod, hookimpl
+from alphawindow.plugins import (
+    PluginInputMethod,
+    PluginRecordingInputCaptureMethod,
+    hookimpl,
+)
 from alphawindow.recording import PynputRecordingControls
-from alphawindow.types import BackendCompatibilityError
+from alphawindow.types import (
+    BackendCompatibilityError,
+    Capability,
+    InputMode,
+    Operation,
+    OperationResult,
+    WindowSnapshot,
+)
 
 
 DEFAULT_VID = 0x1C1F
@@ -428,6 +439,62 @@ class KmboxRecordingControls:
         self.dispatch(callback)
 
 
+class KmboxInputBackend:
+    mode = InputMode.FOREGROUND
+    capabilities = frozenset({Capability.GLOBAL_INPUT})
+
+    def __init__(
+        self,
+        *,
+        kmbox_factory: Callable[..., Any] | None = None,
+        **device_options: Any,
+    ) -> None:
+        self.kmbox_factory = kmbox_factory
+        self.device_options = dict(device_options)
+        self.device: Any | None = None
+        self._open_device()
+
+    def close(self) -> None:
+        device = self.device
+        if device is None:
+            return
+        self.device = None
+        device.close()
+
+    def perform(
+        self,
+        target: WindowSnapshot,
+        operation: Operation,
+    ) -> OperationResult:
+        if operation.kind != "mouse_delta":
+            raise BackendCompatibilityError(
+                f"kmbox replay only supports mouse_delta operations, got "
+                f"{operation.kind!r}"
+            )
+        if self.device is None:
+            raise BackendCompatibilityError("kmbox replay device is closed")
+        dx, dy = _operation_mouse_delta(operation)
+        self.device.move_relative(dx, dy)
+        return OperationResult(
+            operation=operation,
+            executed=True,
+            backend="kmbox",
+            details={"hwnd": target.hwnd},
+        )
+
+    def _open_device(self) -> None:
+        device = self._create_device()
+        if not device.open():
+            device.close()
+            raise BackendCompatibilityError("kmbox device was not found")
+        self.device = device
+
+    def _create_device(self) -> Any:
+        if self.kmbox_factory is not None:
+            return self.kmbox_factory(**self.device_options)
+        return create_kmbox_device(**self.device_options)
+
+
 class KmboxHidDevice:
     def __init__(
         self,
@@ -805,53 +872,21 @@ def alphawindow_recording_input_capture_methods():
             name="kmbox",
             factory=KmboxRecordingControls,
             description="record generic kmbox relative mouse input",
-            metadata={
-                "plugin_id": "kmbox",
-                "plugin_name": "kmbox",
-                "connection_status": {
-                    "kind": "hardware_probe",
-                    "probe": "kmbox_connection_status",
-                },
-                "_connection_status_probe": kmbox_connection_status,
-                "property_schema": {
-                    "device_type": {
-                        "type": "string",
-                        "label": "Device type",
-                        "default": "auto",
-                        "enum": ["auto", "hid", "kmbox_a"],
-                    },
-                    "device_id": {
-                        "type": "string",
-                        "label": "Device path contains",
-                        "default": "",
-                    },
-                    "kmbox_a_vid": {
-                        "type": "string",
-                        "label": "kmboxA VID",
-                        "default": "0x04d8",
-                    },
-                    "kmbox_a_pid": {
-                        "type": "string",
-                        "label": "kmboxA PID",
-                        "default": "0x003f",
-                    },
-                    "kmbox_a_module_path": {
-                        "type": "string",
-                        "label": "kmboxA module path",
-                        "default": "",
-                    },
-                    "passthrough": {
-                        "type": "boolean",
-                        "label": "Pass through movement",
-                        "default": True,
-                    },
-                    "read_timeout_ms": {
-                        "type": "number",
-                        "label": "Read timeout ms",
-                        "default": 10,
-                    },
-                },
-            },
+            metadata=_kmbox_plugin_metadata(recording=True),
+        )
+    ]
+
+
+@hookimpl
+def alphawindow_input_methods():
+    return [
+        PluginInputMethod(
+            name="kmbox",
+            factory=KmboxInputBackend,
+            mode=InputMode.FOREGROUND,
+            capabilities={Capability.GLOBAL_INPUT},
+            description="replay relative mouse input through kmbox hardware",
+            metadata=_kmbox_plugin_metadata(recording=False),
         )
     ]
 
@@ -884,6 +919,11 @@ def _kmbox_a_supports_recording_input(module: Any | None) -> bool:
     return callable(getattr(module, "read_mouse_delta", None))
 
 
+def _operation_mouse_delta(operation: Operation) -> tuple[int, int]:
+    metadata = operation.metadata or {}
+    return int(metadata.get("dx", 0)), int(metadata.get("dy", 0))
+
+
 def _encode_mouse_notification(dx: int, dy: int) -> bytes:
     return bytes(
         [
@@ -904,13 +944,73 @@ def _coerce_bool(value: Any) -> bool:
     return bool(value)
 
 
+def _kmbox_plugin_metadata(*, recording: bool) -> dict[str, Any]:
+    schema = _kmbox_property_schema()
+    if not recording:
+        schema.pop("passthrough", None)
+        schema.pop("read_timeout_ms", None)
+    return {
+        "plugin_id": "kmbox",
+        "plugin_name": "kmbox",
+        "connection_status": {
+            "kind": "hardware_probe",
+            "probe": "kmbox_connection_status",
+        },
+        "_connection_status_probe": kmbox_connection_status,
+        "property_schema": schema,
+    }
+
+
+def _kmbox_property_schema() -> dict[str, dict[str, Any]]:
+    return {
+        "device_type": {
+            "type": "string",
+            "label": "Device type",
+            "default": "auto",
+            "enum": ["auto", "hid", "kmbox_a"],
+        },
+        "device_id": {
+            "type": "string",
+            "label": "Device path contains",
+            "default": "",
+        },
+        "kmbox_a_vid": {
+            "type": "string",
+            "label": "kmboxA VID",
+            "default": "0x04d8",
+        },
+        "kmbox_a_pid": {
+            "type": "string",
+            "label": "kmboxA PID",
+            "default": "0x003f",
+        },
+        "kmbox_a_module_path": {
+            "type": "string",
+            "label": "kmboxA module path",
+            "default": "",
+        },
+        "passthrough": {
+            "type": "boolean",
+            "label": "Pass through movement",
+            "default": True,
+        },
+        "read_timeout_ms": {
+            "type": "number",
+            "label": "Read timeout ms",
+            "default": 10,
+        },
+    }
+
+
 __all__ = [
     "KmboxADevice",
     "KmboxHidDevice",
+    "KmboxInputBackend",
     "KmboxRecordingControls",
     "create_kmbox_device",
     "detect_kmbox_devices",
     "decode_mouse_notification",
     "kmbox_connection_status",
+    "alphawindow_input_methods",
     "alphawindow_recording_input_capture_methods",
 ]
